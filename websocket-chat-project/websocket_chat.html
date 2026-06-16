@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Chat</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: Georgia, "Times New Roman", serif;
+            background: linear-gradient(135deg, #17202a, #31475f 48%, #f0b35a);
+            color: #17202a;
+            display: grid;
+            place-items: center;
+        }
+
+        .auth,
+        .app {
+            width: min(960px, 94vw);
+            background: #fff8eb;
+            border: 3px solid #17202a;
+            box-shadow: 12px 12px 0 rgba(0, 0, 0, 0.3);
+        }
+
+        .auth {
+            max-width: 430px;
+            padding: 28px;
+        }
+
+        .app {
+            min-height: 580px;
+            display: none;
+            grid-template-columns: 260px 1fr;
+        }
+
+        aside {
+            background: #17202a;
+            color: #fff8eb;
+            padding: 22px;
+        }
+
+        h1 {
+            margin: 0 0 20px;
+            font-size: 28px;
+            line-height: 1.05;
+        }
+
+        label {
+            display: block;
+            margin: 14px 0 6px;
+            font-weight: bold;
+        }
+
+        input, select, button {
+            width: 100%;
+            padding: 10px 12px;
+            border: 2px solid #17202a;
+            font: inherit;
+            background: #fffdf8;
+        }
+
+        aside input,
+        aside select {
+            border-color: #fff8eb;
+        }
+
+        button {
+            margin-top: 12px;
+            background: #f0b35a;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #ffd078;
+        }
+
+        .secondary {
+            background: #e3ecf2;
+        }
+
+        .message-line {
+            min-height: 22px;
+            color: #9b2c2c;
+            font-weight: bold;
+        }
+
+        main {
+            padding: 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            font-weight: bold;
+        }
+
+        .chat {
+            flex: 1;
+            min-height: 350px;
+            background: #fffdf8;
+            border: 2px solid #17202a;
+            padding: 14px;
+            overflow-y: auto;
+        }
+
+        .bubble {
+            max-width: 78%;
+            margin: 8px 0;
+            padding: 10px 12px;
+            border: 2px solid #17202a;
+            background: #e3ecf2;
+        }
+
+        .bubble.me {
+            margin-left: auto;
+            background: #cde8c8;
+        }
+
+        .bubble small {
+            display: block;
+            margin-bottom: 4px;
+            font-weight: bold;
+        }
+
+        .compose {
+            display: grid;
+            grid-template-columns: 1fr 110px;
+            gap: 10px;
+        }
+
+        .compose button {
+            margin-top: 0;
+        }
+
+        @media (max-width: 760px) {
+            body {
+                display: block;
+            }
+
+            .auth,
+            .app {
+                width: 100%;
+                min-height: 100vh;
+                border: 0;
+                box-shadow: none;
+            }
+
+            .app {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <section id="auth" class="auth">
+        <h1>Chat Login</h1>
+        <label for="username">Username</label>
+        <input id="username" autocomplete="username" placeholder="Enter username">
+
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" placeholder="Enter password">
+
+        <button id="loginButton">Login</button>
+        <button id="signupButton" class="secondary">Create Account</button>
+        <p id="authMessage" class="message-line"></p>
+    </section>
+
+    <div id="app" class="app">
+        <aside>
+            <h1>WebSocket Chat</h1>
+            <p id="loggedInUser"></p>
+
+            <label for="receiver">Send to</label>
+            <input id="receiver" placeholder="Receiver username">
+
+            <label for="onlineUsers">Online users</label>
+            <select id="onlineUsers" size="6"></select>
+
+            <button id="logoutButton" class="secondary">Logout</button>
+        </aside>
+
+        <main>
+            <div class="topbar">
+                <span id="status">Disconnected</span>
+                <span id="route">Route: - -> -</span>
+            </div>
+
+            <section id="chat" class="chat"></section>
+
+            <div class="compose">
+                <input id="message" placeholder="Type message">
+                <button id="sendButton">Send</button>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let ws;
+        let currentUser = "";
+        const auth = document.getElementById("auth");
+        const app = document.getElementById("app");
+        const usernameInput = document.getElementById("username");
+        const passwordInput = document.getElementById("password");
+        const authMessage = document.getElementById("authMessage");
+        const loggedInUser = document.getElementById("loggedInUser");
+        const receiverInput = document.getElementById("receiver");
+        const statusText = document.getElementById("status");
+        const routeText = document.getElementById("route");
+        const chat = document.getElementById("chat");
+        const messageInput = document.getElementById("message");
+        const onlineUsers = document.getElementById("onlineUsers");
+
+        async function accountRequest(url) {
+            authMessage.textContent = "";
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value.trim();
+
+            const response = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await response.json();
+
+            if (!data.ok) {
+                authMessage.textContent = data.message;
+                return;
+            }
+
+            openChat(data.username);
+        }
+
+        function openChat(username) {
+            currentUser = username;
+            auth.style.display = "none";
+            app.style.display = "grid";
+            loggedInUser.textContent = `Logged in as ${currentUser}`;
+            connectWebSocket();
+            updateRoute();
+        }
+
+        function connectWebSocket() {
+            ws = new WebSocket(`ws://${location.host}`);
+            ws.onopen = () => {
+                statusText.textContent = `Connected as ${currentUser}`;
+                ws.send(`LOGIN:${currentUser}`);
+            };
+            ws.onmessage = event => handleServerMessage(event.data);
+            ws.onclose = () => {
+                statusText.textContent = "Disconnected";
+            };
+        }
+
+        function handleServerMessage(data) {
+            if (data.startsWith("USERS:")) {
+                renderUsers(data.slice(6).split(",").filter(Boolean));
+                return;
+            }
+
+            if (data.startsWith("HISTORY:")) {
+                JSON.parse(data.slice(8)).forEach(line => addHistoryLine(line));
+                return;
+            }
+
+            if (data.startsWith("MESSAGE:")) {
+                const msg = JSON.parse(data.slice(8));
+                addBubble(msg.sender, msg.receiver, msg.text);
+            }
+        }
+
+        function sendMessage() {
+            const receiver = receiverInput.value.trim();
+            const text = messageInput.value.trim();
+            if (!ws || ws.readyState !== WebSocket.OPEN || !receiver || !text) {
+                return;
+            }
+
+            ws.send(`MSG:${receiver}:${text}`);
+            messageInput.value = "";
+        }
+
+        function renderUsers(users) {
+            onlineUsers.innerHTML = "";
+            users.filter(user => user !== currentUser).forEach(user => {
+                const option = document.createElement("option");
+                option.value = user;
+                option.textContent = user;
+                onlineUsers.appendChild(option);
+            });
+        }
+
+        function addBubble(sender, receiver, text) {
+            const bubble = document.createElement("div");
+            bubble.className = "bubble" + (sender === currentUser ? " me" : "");
+            bubble.innerHTML = `<small>${escapeHtml(sender)} to ${escapeHtml(receiver)}</small>${escapeHtml(text)}`;
+            chat.appendChild(bubble);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        function addHistoryLine(line) {
+            const bubble = document.createElement("div");
+            bubble.className = "bubble";
+            bubble.textContent = line;
+            chat.appendChild(bubble);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        function logout() {
+            if (ws) {
+                ws.close();
+            }
+            currentUser = "";
+            chat.innerHTML = "";
+            receiverInput.value = "";
+            onlineUsers.innerHTML = "";
+            app.style.display = "none";
+            auth.style.display = "block";
+            statusText.textContent = "Disconnected";
+            updateRoute();
+        }
+
+        function updateRoute() {
+            routeText.textContent = `Route: ${currentUser || "-"} -> ${receiverInput.value || "-"}`;
+        }
+
+        function escapeHtml(text) {
+            return text
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#039;");
+        }
+
+        document.getElementById("loginButton").addEventListener("click", () => accountRequest("/login"));
+        document.getElementById("signupButton").addEventListener("click", () => accountRequest("/signup"));
+        document.getElementById("sendButton").addEventListener("click", sendMessage);
+        document.getElementById("logoutButton").addEventListener("click", logout);
+        receiverInput.addEventListener("input", updateRoute);
+        onlineUsers.addEventListener("change", () => {
+            receiverInput.value = onlineUsers.value;
+            updateRoute();
+        });
+        messageInput.addEventListener("keydown", event => {
+            if (event.key === "Enter") {
+                sendMessage();
+            }
+        });
+        passwordInput.addEventListener("keydown", event => {
+            if (event.key === "Enter") {
+                accountRequest("/login");
+            }
+        });
+    </script>
+</body>
+</html>
